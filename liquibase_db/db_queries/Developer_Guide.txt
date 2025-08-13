@@ -1,0 +1,158 @@
+# MongoDB Query Guidelines for Liquibase Compatibility
+
+## 🎯 MANDATORY RULES
+
+### 1. File Header
+```javascript
+// @context: dev|staging|prod
+// @author: your-name
+// @description: What this changeset does
+// @version: X.Y
+```
+
+### 2. Date Handling
+✅ **ALWAYS USE**: `ISODate("2023-01-01T00:00:00.000Z")`
+❌ **NEVER USE**: 
+- `new Date("2023-01-01")`
+- `new Date("Mon Jan 01 2023")`
+- `Date.now()`
+- Custom date formats
+
+### 3. Collection References
+✅ **ALWAYS USE**: `db.getCollection("collection_name")`
+❌ **NEVER USE**: `db.collection_name`
+
+### 4. Supported Operations
+✅ **SUPPORTED**:
+- `insertOne()`, `insertMany()`
+- `updateOne()`, `updateMany()`
+- `deleteOne()`, `deleteMany()`
+- `createIndex()`, `dropIndex()`
+- `createCollection()`, `dropCollection()`
+
+❌ **NOT SUPPORTED**:
+- `find()`, `findOne()` (read operations)
+- `aggregate()`
+- `mapReduce()`
+- `distinct()`
+- Complex JavaScript functions
+
+### 5. Query Operators
+✅ **SAFE OPERATORS**:
+- `$set`, `$unset`, `$push`, `$pull`, `$addToSet`
+- `$in`, `$nin`, `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`
+- `$exists`, `$regex`, `$elemMatch`
+
+⚠️ **USE WITH CAUTION**:
+- `$where` (avoid if possible)
+- Custom JavaScript expressions
+
+### 6. Data Types
+✅ **SAFE**:
+```javascript
+{
+    "stringField": "text",
+    "numberField": 123,
+    "booleanField": true,
+    "arrayField": ["item1", "item2"],
+    "objectField": {"nested": "value"},
+    "dateField": ISODate("2023-01-01T00:00:00.000Z"),
+    "nullField": null
+}
+```
+
+### 7. Query Structure
+✅ **GOOD**:
+```javascript
+// Simple, clear operations
+db.getCollection("users").deleteMany({"status": "inactive"});
+
+db.getCollection("users").insertMany([
+    {"name": "John", "role": "admin"},
+    {"name": "Jane", "role": "user"}
+]);
+```
+
+❌ **AVOID**:
+```javascript
+// Complex nested operations in single command
+// Multiple operations without clear separation
+// Operations dependent on JavaScript execution context
+```
+
+## 🔍 VALIDATION CHECKLIST
+
+Before submitting your MongoDB script:
+
+- [ ] File has proper header with context, author, description
+- [ ] All dates use `ISODate()` format
+- [ ] All collections use `db.getCollection()` syntax
+- [ ] No JavaScript functions except supported MongoDB operations
+- [ ] No read operations (find, aggregate, etc.)
+- [ ] All operations are idempotent (can be run multiple times safely)
+- [ ] JSON syntax is valid (use JSON validator)
+- [ ] Operations are in logical order (deletes before inserts, etc.)
+
+## 📝 EXAMPLE: COMPLETE CHANGESET
+
+```javascript
+// @context: dev
+// @author: john.doe
+// @description: Update user permissions for new feature
+// @version: 2.1
+
+// Remove old permissions
+db.getCollection("user_permissions").deleteMany({
+    "permission": {"$in": ["old.feature.read", "old.feature.write"]}
+});
+
+// Add new permissions
+db.getCollection("user_permissions").insertMany([
+{
+    "permission": "new.feature.view",
+    "description": "View new feature",
+    "createdAt": ISODate("2024-01-01T00:00:00.000Z"),
+    "active": true
+},
+{
+    "permission": "new.feature.manage",
+    "description": "Manage new feature",
+    "createdAt": ISODate("2024-01-01T00:00:00.000Z"),
+    "active": true
+}
+]);
+
+// Update user roles
+db.getCollection("user_roles").updateMany(
+    {"roleType": {"$in": ["ADMIN", "MANAGER"]}},
+    {
+        "$pull": {
+            "permissions": {
+                "permission": {"$in": ["old.feature.read", "old.feature.write"]}
+            }
+        }
+    }
+);
+
+db.getCollection("user_roles").updateMany(
+    {"roleType": {"$in": ["ADMIN", "MANAGER"]}},
+    {
+        "$push": {
+            "permissions": {
+                "$each": [
+                    {"permission": "new.feature.view", "level": "ALL"},
+                    {"permission": "new.feature.manage", "level": "ALL"}
+                ]
+            }
+        }
+    }
+);
+```
+
+## 🚨 COMMON ERRORS TO AVOID
+
+1. **Date Format Errors**: Always use ISODate()
+2. **Syntax Errors**: Validate JSON structure
+3. **Collection Name Errors**: Use getCollection() method
+4. **Order Dependencies**: Delete before insert, pull before push
+5. **Non-idempotent Operations**: Ensure operations can be repeated safely
