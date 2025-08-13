@@ -49,7 +49,7 @@ else
 fi
 
 # Find and validate the changeset file
-CHANGESETS_DIR="json_changesets"
+CHANGESETS_DIR="xml_changesets"
 
 echo ""
 echo "=== Changeset File Discovery ==="
@@ -89,7 +89,7 @@ else
         echo "💡 Make sure you have:"
         echo "   1. Generated changesets using the GitHub workflow"
         echo "   2. Merged PRs with JS files in db_queries/"
-        echo "   3. XML files are present in json_changesets/"
+        echo "   3. XML files are present in xml_changesets/"
         exit 1
     fi
     
