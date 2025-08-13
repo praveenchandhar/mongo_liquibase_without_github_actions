@@ -1,0 +1,321 @@
+name: New Changeset Applied Notification
+
+on:
+  pull_request:
+    paths:
+      - json_changesets/**
+    types:
+      - closed # Trigger only when PR is closed (and potentially merged)
+
+jobs:
+  notify-ready-to-apply:
+    if: ${{ github.event.pull_request.merged == true }} # Ensure only merged PRs trigger the workflow
+    name: Notify Ready to Apply Changeset
+    runs-on: ubuntu-latest
+    
+    # 🔒 Minimal permissions needed
+    permissions:
+      contents: read         # Read repository content
+      pull-requests: write   # Add comments and reactions
+      issues: write         # Comment on PRs
+
+    steps:
+      # Step 1: Add processing reaction
+      - name: Add Processing Reaction
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "⚙️ Adding processing reaction to PR #${{ github.event.pull_request.number }}"
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions \
+            -d '{"content":"gear"}'
+          echo "✅ Processing reaction added"
+
+      # Step 2: Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Step 3: Detect Merged XML Files
+      - name: Detect Merged XML Files
+        id: detect_xml
+        run: |
+          echo "=== Detecting Merged XML Files ==="
+          
+          MERGE_COMMIT_SHA=${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          
+          echo "Commit info:"
+          echo "- Merge SHA: $MERGE_COMMIT_SHA"
+          echo "- Head SHA: $HEAD_SHA"
+          echo "- Base SHA: $BASE_SHA"
+          
+          # Get XML files from the merge (multiple methods for reliability)
+          echo ""
+          echo "Method 1: Checking merge commit..."
+          XML_FILES_METHOD1=$(git diff-tree --no-commit-id --name-only -r $MERGE_COMMIT_SHA 2>/dev/null | { grep 'json_changesets/.*\.xml' || true; })
+          echo "Method 1 result: '$XML_FILES_METHOD1'"
+          
+          echo ""
+          echo "Method 2: Checking diff between base and head..."
+          XML_FILES_METHOD2=$(git diff --name-only $BASE_SHA..$HEAD_SHA 2>/dev/null | { grep 'json_changesets/.*\.xml' || true; })
+          echo "Method 2 result: '$XML_FILES_METHOD2'"
+          
+          echo ""
+          echo "Method 3: Checking current json_changesets directory..."
+          if [ -d "json_changesets" ]; then
+            XML_FILES_METHOD3=$(find json_changesets -name "*.xml" -type f 2>/dev/null | head -5 || true)
+            echo "Method 3 result: '$XML_FILES_METHOD3'"
+          else
+            XML_FILES_METHOD3=""
+            echo "Method 3 result: 'json_changesets directory not found'"
+          fi
+          
+          # Use the first method that finds files
+          XML_FILES=""
+          if [ -n "$XML_FILES_METHOD1" ]; then
+            XML_FILES="$XML_FILES_METHOD1"
+            echo "✅ Using Method 1 result"
+          elif [ -n "$XML_FILES_METHOD2" ]; then
+            XML_FILES="$XML_FILES_METHOD2"
+            echo "✅ Using Method 2 result"
+          elif [ -n "$XML_FILES_METHOD3" ]; then
+            XML_FILES="$XML_FILES_METHOD3"
+            echo "✅ Using Method 3 result"
+          fi
+          
+          echo ""
+          echo "=== Final Detection Result ==="
+          if [ -z "$XML_FILES" ]; then
+            echo "❌ No XML files found in json_changesets directory"
+            echo "has_xml_files=false" >> $GITHUB_ENV
+          else
+            echo "✅ XML files detected:"
+            echo "$XML_FILES"
+            
+            # Count XML files
+            XML_COUNT=$(echo "$XML_FILES" | wc -l)
+            echo "Total XML files: $XML_COUNT"
+            
+            # Get the first XML file for version extraction
+            FIRST_XML=$(echo "$XML_FILES" | head -n 1)
+            VERSION=$(basename "$FIRST_XML" .xml)
+            
+            echo "xml_files_list<<EOF" >> $GITHUB_ENV
+            echo "$XML_FILES" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            
+            echo "has_xml_files=true" >> $GITHUB_ENV
+            echo "version=$VERSION" >> $GITHUB_ENV
+            echo "xml_count=$XML_COUNT" >> $GITHUB_ENV
+            echo "first_xml_file=$FIRST_XML" >> $GITHUB_ENV
+            
+            # Extract context from the XML file
+            if [ -f "$FIRST_XML" ]; then
+              echo ""
+              echo "=== Analyzing XML Content ==="
+              echo "File: $FIRST_XML"
+              echo "File size: $(wc -c < "$FIRST_XML") bytes"
+              
+              # Extract context
+              CONTEXT=$(grep -oP 'context="[^"]*"' "$FIRST_XML" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "liquibase_test")
+              echo "context=$CONTEXT" >> $GITHUB_ENV
+              echo "✅ Context extracted: $CONTEXT"
+              
+              # Extract author
+              AUTHOR=$(grep -oP 'author="[^"]*"' "$FIRST_XML" | head -n 1 | sed 's/author="//; s/"//' 2>/dev/null || echo "unknown")
+              echo "author=$AUTHOR" >> $GITHUB_ENV
+              echo "✅ Author extracted: $AUTHOR"
+              
+              # Count changesets
+              CHANGESET_COUNT=$(grep -c '<changeSet id=' "$FIRST_XML" 2>/dev/null || echo "0")
+              echo "changeset_count=$CHANGESET_COUNT" >> $GITHUB_ENV
+              echo "✅ Changesets found: $CHANGESET_COUNT"
+              
+              # Extract changeset IDs
+              CHANGESET_IDS=$(grep -oP 'id="[^"]*"' "$FIRST_XML" | sed 's/id="//; s/"//' | head -5 | tr '\n' ', ' | sed 's/,$//' 2>/dev/null || echo "")
+              echo "changeset_ids=$CHANGESET_IDS" >> $GITHUB_ENV
+              echo "✅ Changeset IDs: $CHANGESET_IDS"
+              
+            else
+              echo "⚠️ File not found: $FIRST_XML"
+              echo "context=liquibase_test" >> $GITHUB_ENV
+              echo "author=unknown" >> $GITHUB_ENV
+              echo "changeset_count=0" >> $GITHUB_ENV
+              echo "changeset_ids=" >> $GITHUB_ENV
+            fi
+          fi
+
+      # Step 4: Validate XML Files
+      - name: Validate XML Files
+        if: env.has_xml_files == 'true'
+        run: |
+          echo "=== Validating XML Files ==="
+          
+          VALIDATION_RESULTS=""
+          VALID_COUNT=0
+          INVALID_COUNT=0
+          
+          echo "${{ env.xml_files_list }}" | while read -r xml_file; do
+            if [ -n "$xml_file" ] && [ -f "$xml_file" ]; then
+              echo ""
+              echo "Validating: $xml_file"
+              
+              # Check if it's well-formed XML
+              if python3 -c "import xml.etree.ElementTree as ET; ET.parse('$xml_file')" 2>/dev/null; then
+                echo "✅ Valid XML: $xml_file"
+                VALID_COUNT=$((VALID_COUNT + 1))
+              else
+                echo "❌ Invalid XML: $xml_file"
+                INVALID_COUNT=$((INVALID_COUNT + 1))
+              fi
+            fi
+          done
+          
+          echo ""
+          echo "Validation Summary:"
+          echo "- Valid XML files: $VALID_COUNT"
+          echo "- Invalid XML files: $INVALID_COUNT"
+
+      # Step 5: Post Comprehensive Application Instructions
+      - name: Post Application Instructions
+        if: env.has_xml_files == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Posting Comprehensive Application Instructions ==="
+          
+          # Create detailed application instructions comment
+          cat > application_instructions.md << EOF
+          ## 🎯 Changeset Ready to Apply!
+          
+          **Your MongoDB changeset has been successfully merged and is ready for database application.**
+          
+          ### 📋 Changeset Summary
+          - **📁 Files Merged:** ${{ env.xml_count }} XML file(s)
+          - **🔖 Version:** \`${{ env.version }}\`
+          - **👤 Author:** \`${{ env.author }}\`
+          - **🏷️ Context:** \`${{ env.context }}\`
+          - **📊 Changesets:** ${{ env.changeset_count }} operation(s)
+          - **🆔 IDs:** \`${{ env.changeset_ids }}\`
+          
+          ### 📁 Files Applied
+          \`\`\`
+          ${{ env.xml_files_list }}
+          \`\`\`
+          
+          ### 🚀 How to Apply These Changes
+          
+          **Option 1: Apply specific version**
+          \`\`\`
+          /liquibase update ${{ env.context }} ${{ env.version }}
+          \`\`\`
+          
+          **Option 2: Apply all pending changes for context**
+          \`\`\`
+          /liquibase update ${{ env.context }}
+          \`\`\`
+          
+          **Option 3: Dry run (see what would be applied)**
+          \`\`\`
+          /liquibase update-sql ${{ env.context }} ${{ env.version }}
+          \`\`\`
+          
+          ### ⚠️ Before Applying
+          1. **✅ Backup your database** (if not already done)
+          2. **🔍 Review the changeset** content one more time
+          3. **🧪 Test in development** environment first
+          4. **📞 Notify your team** if this affects shared resources
+          
+          ### 🎯 Next Steps
+          1. Choose the appropriate command above
+          2. **Comment the command** on this PR to execute
+          3. **Monitor the execution** logs for any issues
+          4. **Verify the changes** in your database
+          
+          ### 📍 File Location
+          Your changeset files are located in:
+          - **Directory:** \`json_changesets/\`
+          - **Primary File:** \`${{ env.first_xml_file }}\`
+          
+          ---
+          *🤖 Auto-generated by Changeset Application Workflow • [View Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) • PR #${{ github.event.pull_request.number }}*
+          EOF
+          
+          # Post comment using GitHub CLI
+          gh pr comment ${{ github.event.pull_request.number }} --body-file application_instructions.md
+          
+          echo "✅ Comprehensive application instructions posted on PR #${{ github.event.pull_request.number }}"
+
+      # Step 6: Post No-Action Comment (when no XML files found)
+      - name: Post No-Action Comment
+        if: env.has_xml_files == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Posting No-Action Comment ==="
+          
+          cat > no_action_comment.md << 'EOF'
+          ## ℹ️ No Changeset Files Detected
+          
+          **This PR was merged but no XML changeset files were found in the `json_changesets/` directory.**
+          
+          ### 🔍 Expected Structure
+          For changeset application workflows to trigger, ensure your PR includes:
+          - XML files in the `json_changesets/` directory
+          - Valid Liquibase changeset format
+          - Proper MongoDB operations
+          
+          ### 💡 If This Was Intentional
+          - This might be a documentation update or configuration change
+          - No database changes will be applied
+          
+          ---
+          *🤖 Auto-generated by Changeset Application Workflow*
+          EOF
+          
+          gh pr comment ${{ github.event.pull_request.number }} --body-file no_action_comment.md
+          
+          echo "✅ No-action comment posted"
+
+      # Step 7: Add completion reaction
+      - name: Add Completion Reaction
+        if: env.has_xml_files == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🎉 Adding completion reaction to PR"
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions \
+            -d '{"content":"tada"}'
+          echo "✅ Completion reaction added"
+
+      # Step 8: Workflow Summary
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "=== Changeset Applied Notification Summary ==="
+          echo "🔒 Security: Minimal permissions (contents:read, pull-requests:write)"
+          echo "⚙️ Processing reaction: Added to PR #${{ github.event.pull_request.number }}"
+          
+          if [ "${{ env.has_xml_files }}" = "true" ]; then
+            echo "✅ XML changesets detected and ready to apply"
+            echo "📁 Files: ${{ env.xml_count }} XML file(s)"
+            echo "🔖 Version: ${{ env.version }}"
+            echo "👤 Author: ${{ env.author }}"
+            echo "🏷️ Context: ${{ env.context }}"
+            echo "📊 Changesets: ${{ env.changeset_count }} operation(s)"
+            echo "✅ Application instructions posted on PR #${{ github.event.pull_request.number }}"
+            echo "🎉 Completion reaction added"
+          else
+            echo "ℹ️ No XML changeset files found in this merge"
+            echo "✅ No-action comment posted"
+          fi
+          
+          echo "=== End Summary ==="
