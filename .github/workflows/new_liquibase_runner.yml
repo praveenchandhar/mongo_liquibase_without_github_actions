@@ -202,9 +202,9 @@ jobs:
           ```
           
           ### 📁 Changeset Structure
-          Your changesets should be in the `json_changesets/` directory:
+          Your changesets should be in the `xml_changesets/` directory:
           ```
-          json_changesets/
+          xml_changesets/
           ├── version_1.xml
           ├── test_security.xml
           └── user_updates.xml
@@ -240,18 +240,18 @@ jobs:
         if: env.COMMAND != 'help' && env.COMMAND != 'invalid'
         run: |
           echo "📁 Checking available changesets..."
-          if [ -d "json_changesets" ]; then
-              echo "✅ json_changesets directory exists"
+          if [ -d "xml_changesets" ]; then
+              echo "✅ xml_changesets directory exists"
               echo "📋 Available changeset files:"
-              ls -la json_changesets/*.xml 2>/dev/null || echo "No XML files found"
+              ls -la xml_changesets/*.xml 2>/dev/null || echo "No XML files found"
               echo ""
-              echo "📊 File count: $(find json_changesets -name "*.xml" -type f | wc -l)"
+              echo "📊 File count: $(find xml_changesets -name "*.xml" -type f | wc -l)"
               
               # Show changesets for the specified context
               if [ -n "$DATABASE" ]; then
                   echo ""
                   echo "🔍 Changesets for context '$DATABASE':"
-                  find json_changesets -name "*.xml" -type f | while read xml_file; do
+                  find xml_changesets -name "*.xml" -type f | while read xml_file; do
                       CONTEXT=$(grep -oP 'context="[^"]*"' "$xml_file" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "unknown")
                       CHANGESET_ID=$(grep -oP 'id="[^"]*"' "$xml_file" | head -n 1 | sed 's/id="//; s/"//' 2>/dev/null || echo "unknown")
                       AUTHOR=$(grep -oP 'author="[^"]*"' "$xml_file" | head -n 1 | sed 's/author="//; s/"//' 2>/dev/null || echo "unknown")
@@ -264,7 +264,7 @@ jobs:
                   done
               fi
           else
-              echo "❌ json_changesets directory does not exist"
+              echo "❌ xml_changesets directory does not exist"
               echo "💡 This is expected if no changesets have been generated yet"
           fi
 
@@ -274,7 +274,7 @@ jobs:
         run: |
           echo "🔍 Validating version: $VERSION"
           
-          VERSION_FILE="json_changesets/${VERSION}.xml"
+          VERSION_FILE="xml_changesets/${VERSION}.xml"
           
           if [ -f "$VERSION_FILE" ]; then
               echo "✅ Version file found: $VERSION_FILE"
@@ -300,7 +300,7 @@ jobs:
           else
               echo "❌ Version file not found: $VERSION_FILE"
               echo "💡 Available versions:"
-              find json_changesets -name "*.xml" -type f -exec basename {} .xml \; 2>/dev/null | sort || echo "   (none)"
+              find xml_changesets -name "*.xml" -type f -exec basename {} .xml \; 2>/dev/null | sort || echo "   (none)"
               
               echo "version_not_found=true" >> $GITHUB_ENV
           fi
@@ -397,14 +397,14 @@ jobs:
           
           echo "Looking for available changesets..." >> version_error.md
           echo '```' >> version_error.md
-          if [ -d "json_changesets" ]; then
-              find json_changesets -name "*.xml" -type f | while read xml_file; do
+          if [ -d "xml_changesets" ]; then
+              find xml_changesets -name "*.xml" -type f | while read xml_file; do
                   filename=$(basename "$xml_file" .xml)
                   context=$(grep -oP 'context="[^"]*"' "$xml_file" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "unknown")
                   echo "$filename (context: $context)"
               done >> version_error.md
           else
-              echo "No changesets found in json_changesets/ directory" >> version_error.md
+              echo "No changesets found in xml_changesets/ directory" >> version_error.md
           fi
           echo '```' >> version_error.md
           
