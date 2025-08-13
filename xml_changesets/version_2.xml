@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:mongodb="http://www.liquibase.org/xml/ns/dbchangelog-ext"
+    xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.5.xsd
+        http://www.liquibase.org/xml/ns/dbchangelog-ext
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-ext.xsd">
+    <!-- VALIDATION REPORT -->
+    <!-- ⚠️ WARNINGS: -->
+    <!-- ================================================== -->
+    <!-- 1. Header: Missing recommended header field: @author -->
+    <!-- 2. Header: Missing recommended header field: @description -->
+    <!-- 3. Header: Missing recommended header field: @version -->
+    <!-- ✅ Liquibase XML generated successfully, but please review warnings above. -->
+    <!-- END VALIDATION REPORT -->
+
+    <changeSet id="2.1" author="praveenchandhar" context="liquibase_test">
+        <!-- INSERTMANY operation on liquibase_demo (from line 2) -->
+        <mongodb:insertMany collectionName="liquibase_demo">
+            <mongodb:documents><![CDATA[
+            [ { name: "John Doe", email: "john@example.com", age: 30 }, { name: "Jane Smith", email: "jane@example.com", age: 25 } ]
+            ]]></mongodb:documents>
+        </mongodb:insertMany>
+    </changeSet>
+    <changeSet id="2.2" author="praveenchandhar" context="liquibase_test">
+        <!-- UPDATEONE operation on liquibase_demo (from line 10) -->
+        <mongodb:runCommand>
+            <mongodb:command><![CDATA[
+            {
+                "update": "liquibase_demo",
+                "updates": [
+                    {
+                        "q": { email: "john@example.com" },
+                        "u": { $set: { age: 31, lastUpdated: ISODate() } },
+                        "multi": false
+                    }
+                ]
+            }
+            ]]></mongodb:command>
+        </mongodb:runCommand>
+    </changeSet>
+    <changeSet id="2.3" author="praveenchandhar" context="liquibase_test">
+        <!-- CREATECOLLECTION operation on liquibase_demo (from line 1) -->
+        <mongodb:createCollection collectionName="liquibase_demo" />
+    </changeSet>
+</databaseChangeLog>
