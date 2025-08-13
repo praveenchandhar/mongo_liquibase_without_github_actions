@@ -1,0 +1,501 @@
+name: New Liquibase Commands from PR Comments
+
+on:
+  issue_comment:
+    types:
+      - created
+
+jobs:
+  liquibase_task:
+    if: |
+      github.event.issue.pull_request &&
+      (
+        startsWith(github.event.comment.body, '/liquibase status') ||
+        startsWith(github.event.comment.body, '/liquibase update') ||
+        startsWith(github.event.comment.body, '/liquibase update-sql') ||
+        startsWith(github.event.comment.body, '/liquibase help')
+      )
+    name: Run Liquibase Tasks
+    runs-on: ubuntu-latest
+    
+    # 🔒 Minimal permissions needed
+    permissions:
+      contents: read         # Read repository content
+      pull-requests: write   # Add comments and reactions
+      issues: write         # Comment on PRs
+
+    steps:
+      # Step 1: Add processing reaction
+      - name: Add Processing Reaction
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "⚙️ Adding processing reaction to comment"
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -d '{"content":"eyes"}'
+          echo "✅ Processing reaction added"
+
+      # Step 2: Checkout Repository Code
+      - name: Checkout Repository Code
+        uses: actions/checkout@v3
+
+      # Step 3: Install Liquibase CLI (Version 4.31.1)
+      - name: Install Liquibase CLI
+        run: |
+          echo "Installing Liquibase CLI version 4.31.1..."
+          wget --quiet https://github.com/liquibase/liquibase/releases/download/v4.31.1/liquibase-4.31.1.zip
+          unzip liquibase-4.31.1.zip
+          chmod +x liquibase
+          mv liquibase /usr/local/bin/liquibase
+          echo "✅ Liquibase CLI has been successfully installed!"
+
+      # Step 4: Prepare Workspace for Dependencies
+      - name: Prepare Workspace for JAR Files
+        run: mkdir -p $HOME/liquibase-jars
+
+      # Step 5: Restore Cached Dependencies
+      - name: Restore Dependencies from Cache
+        id: restore_jars_cache
+        uses: actions/cache@v3
+        with:
+          path: $HOME/liquibase-jars
+          key: liquibase-jars-v15
+          restore-keys: |
+            liquibase-jars-
+
+      # Step 6: Download Missing Dependencies (If Cache Misses)
+      - name: Download Liquibase Dependencies
+        if: steps.restore_jars_cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Downloading dependencies for Liquibase 4.31.1..."
+          JARS_DIR=$HOME/liquibase-jars
+
+          # Clean up old downloads
+          rm -f $JARS_DIR/commons-lang3.jar
+
+          # MongoDB JARs
+          wget --quiet -O $JARS_DIR/mongodb-driver-core.jar https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-core/5.5.0/mongodb-driver-core-5.5.0.jar
+          wget --quiet -O $JARS_DIR/mongodb-driver-sync.jar https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-sync/5.5.0/mongodb-driver-sync-5.5.0.jar
+          wget --quiet -O $JARS_DIR/bson.jar https://repo1.maven.org/maven2/org/mongodb/bson/5.5.0/bson-5.5.0.jar
+
+          # Liquibase Core
+          wget --quiet -O $JARS_DIR/liquibase-core.jar https://repo1.maven.org/maven2/org/liquibase/liquibase-core/4.31.1/liquibase-core-4.31.1.jar
+
+          # Liquibase MongoDB Extension
+          wget --quiet -O $JARS_DIR/liquibase-mongodb.jar https://repo1.maven.org/maven2/org/liquibase/ext/liquibase-mongodb/4.31.1/liquibase-mongodb-4.31.1.jar
+
+          # Additional Dependencies
+          wget --quiet -O $JARS_DIR/commons-io.jar https://repo1.maven.org/maven2/commons-io/commons-io/2.13.0/commons-io-2.13.0.jar
+          wget --quiet -O $JARS_DIR/commons-lang3.jar https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/3.13.0/commons-lang3-3.13.0.jar
+          wget --quiet -O $JARS_DIR/snakeyaml.jar https://repo1.maven.org/maven2/org/yaml/snakeyaml/1.33/snakeyaml-1.33.jar
+
+          # Jackson Dependencies
+          wget --quiet -O $JARS_DIR/jackson-annotations.jar https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.14.2/jackson-annotations-2.14.2.jar
+          wget --quiet -O $JARS_DIR/jackson-core.jar https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-core/2.14.2/jackson-core-2.14.2.jar
+          wget --quiet -O $JARS_DIR/jackson-databind.jar https://repo1.maven.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.14.2/jackson-databind-2.14.2.jar
+
+          # OpenCSV Dependency
+          wget --quiet -O $JARS_DIR/opencsv.jar https://repo1.maven.org/maven2/com/opencsv/opencsv/5.7.1/opencsv-5.7.1.jar
+
+          # SLF4J for logging
+          wget --quiet -O $JARS_DIR/slf4j-api.jar https://repo1.maven.org/maven2/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar
+          wget --quiet -O $JARS_DIR/slf4j-simple.jar https://repo1.maven.org/maven2/org/slf4j/slf4j-simple/1.7.36/slf4j-simple-1.7.36.jar
+
+          echo "✅ All dependencies downloaded to $JARS_DIR."
+
+      # Step 7: Cache Dependencies
+      - name: Cache Dependencies for Faster Reuse
+        if: steps.restore_jars_cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v3
+        with:
+          path: $HOME/liquibase-jars
+          key: liquibase-jars-v15
+
+      # Step 8: Parse PR Comment for Command, Database, and Optional Version
+      - name: Parse PR Comment for Command and Database
+        run: |
+          COMMENT_BODY="${{ github.event.comment.body }}"
+          echo "📝 Parsing PR comment: $COMMENT_BODY"
+
+          # Enhanced regex patterns for different commands
+          if [[ "$COMMENT_BODY" =~ ^/liquibase[[:space:]]+help.*$ ]]; then
+              echo "COMMAND=help" >> $GITHUB_ENV
+              echo "✅ Help command detected"
+          elif [[ "$COMMENT_BODY" =~ ^/liquibase[[:space:]]+status[[:space:]]+([^[:space:]]+)([[:space:]]+([^[:space:]]+))?.*$ ]]; then
+              echo "COMMAND=status" >> $GITHUB_ENV
+              DATABASE="${BASH_REMATCH[1]}"
+              VERSION="${BASH_REMATCH[3]}"
+              echo "DATABASE=$DATABASE" >> $GITHUB_ENV
+              echo "VERSION=$VERSION" >> $GITHUB_ENV
+          elif [[ "$COMMENT_BODY" =~ ^/liquibase[[:space:]]+update-sql[[:space:]]+([^[:space:]]+)([[:space:]]+([^[:space:]]+))?.*$ ]]; then
+              echo "COMMAND=update-sql" >> $GITHUB_ENV
+              DATABASE="${BASH_REMATCH[1]}"
+              VERSION="${BASH_REMATCH[3]}"
+              echo "DATABASE=$DATABASE" >> $GITHUB_ENV
+              echo "VERSION=$VERSION" >> $GITHUB_ENV
+          elif [[ "$COMMENT_BODY" =~ ^/liquibase[[:space:]]+update[[:space:]]+([^[:space:]]+)([[:space:]]+([^[:space:]]+))?.*$ ]]; then
+              echo "COMMAND=update" >> $GITHUB_ENV
+              DATABASE="${BASH_REMATCH[1]}"
+              VERSION="${BASH_REMATCH[3]}"
+              echo "DATABASE=$DATABASE" >> $GITHUB_ENV
+              echo "VERSION=$VERSION" >> $GITHUB_ENV
+          else
+              echo "❌ Invalid command format."
+              echo "COMMAND=invalid" >> $GITHUB_ENV
+          fi
+
+          if [ "$COMMAND" != "help" ] && [ "$COMMAND" != "invalid" ]; then
+              echo "✅ Parsed successfully:"
+              echo "   Command: $COMMAND"
+              echo "   Database: $DATABASE"
+              if [ -n "$VERSION" ]; then
+                  echo "   Version: $VERSION"
+              else
+                  echo "   Version: (latest)"
+              fi
+          fi
+
+      # Step 9: Show Help Information
+      - name: Show Help Information
+        if: env.COMMAND == 'help' || env.COMMAND == 'invalid'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📋 Generating help information..."
+          
+          cat > help_comment.md << 'EOF'
+          ## 🤖 Liquibase Commands Help
+          
+          **Available commands for MongoDB changeset management:**
+          
+          ### 📋 Command Syntax
+          ```
+          /liquibase <command> <context> [version]
+          ```
+          
+          ### 🔧 Available Commands
+          
+          **📊 Status Commands:**
+          ```bash
+          /liquibase status liquibase_test           # Check status for context
+          /liquibase status liquibase_test v1_2_3    # Check specific version status
+          ```
+          
+          **🚀 Update Commands:**
+          ```bash
+          /liquibase update liquibase_test           # Apply all pending changes
+          /liquibase update liquibase_test v1_2_3    # Apply up to specific version
+          ```
+          
+          **👀 Preview Commands (Dry Run):**
+          ```bash
+          /liquibase update-sql liquibase_test       # Show SQL that would be executed
+          /liquibase update-sql liquibase_test v1_2_3 # Show SQL for specific version
+          ```
+          
+          **ℹ️ Help:**
+          ```bash
+          /liquibase help                            # Show this help message
+          ```
+          
+          ### 📁 Changeset Structure
+          Your changesets should be in the `json_changesets/` directory:
+          ```
+          json_changesets/
+          ├── version_1.xml
+          ├── test_security.xml
+          └── user_updates.xml
+          ```
+          
+          ### 🎯 Context Examples
+          - `liquibase_test` - Test environment context
+          - `production` - Production environment context  
+          - `development` - Development environment context
+          
+          ### 📝 Version Format
+          Version should match your XML filename without extension:
+          - File: `test_security.xml` → Version: `test_security`
+          - File: `version_1_2_3.xml` → Version: `version_1_2_3`
+          
+          ### ⚠️ Important Notes
+          1. **Always test with `update-sql` first** to preview changes
+          2. **Backup your database** before running updates
+          3. **Use specific versions** for controlled deployments
+          4. **Monitor the execution logs** for any issues
+          
+          ---
+          *🤖 Generated by Liquibase Command Bot*
+          EOF
+          
+          # Post help comment
+          gh pr comment ${{ github.event.issue.number }} --body-file help_comment.md
+          
+          echo "✅ Help comment posted!"
+
+      # Step 10: Debug Available Changesets
+      - name: List Available Changesets
+        if: env.COMMAND != 'help' && env.COMMAND != 'invalid'
+        run: |
+          echo "📁 Checking available changesets..."
+          if [ -d "json_changesets" ]; then
+              echo "✅ json_changesets directory exists"
+              echo "📋 Available changeset files:"
+              ls -la json_changesets/*.xml 2>/dev/null || echo "No XML files found"
+              echo ""
+              echo "📊 File count: $(find json_changesets -name "*.xml" -type f | wc -l)"
+              
+              # Show changesets for the specified context
+              if [ -n "$DATABASE" ]; then
+                  echo ""
+                  echo "🔍 Changesets for context '$DATABASE':"
+                  find json_changesets -name "*.xml" -type f | while read xml_file; do
+                      CONTEXT=$(grep -oP 'context="[^"]*"' "$xml_file" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "unknown")
+                      CHANGESET_ID=$(grep -oP 'id="[^"]*"' "$xml_file" | head -n 1 | sed 's/id="//; s/"//' 2>/dev/null || echo "unknown")
+                      AUTHOR=$(grep -oP 'author="[^"]*"' "$xml_file" | head -n 1 | sed 's/author="//; s/"//' 2>/dev/null || echo "unknown")
+                      
+                      if [ "$CONTEXT" = "$DATABASE" ]; then
+                          echo "  ✅ $(basename "$xml_file") (ID: $CHANGESET_ID, Author: $AUTHOR)"
+                      else
+                          echo "  ⚪ $(basename "$xml_file") (ID: $CHANGESET_ID, Context: $CONTEXT)"
+                      fi
+                  done
+              fi
+          else
+              echo "❌ json_changesets directory does not exist"
+              echo "💡 This is expected if no changesets have been generated yet"
+          fi
+
+      # Step 11: Validate Specific Version (if provided)
+      - name: Validate Version
+        if: env.COMMAND != 'help' && env.COMMAND != 'invalid' && env.VERSION != ''
+        run: |
+          echo "🔍 Validating version: $VERSION"
+          
+          VERSION_FILE="json_changesets/${VERSION}.xml"
+          
+          if [ -f "$VERSION_FILE" ]; then
+              echo "✅ Version file found: $VERSION_FILE"
+              
+              # Check if it has the correct context
+              FILE_CONTEXT=$(grep -oP 'context="[^"]*"' "$VERSION_FILE" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "unknown")
+              
+              if [ "$FILE_CONTEXT" = "$DATABASE" ]; then
+                  echo "✅ Context matches: $FILE_CONTEXT"
+              else
+                  echo "⚠️ Context mismatch: File has '$FILE_CONTEXT', requested '$DATABASE'"
+              fi
+              
+              # Show changeset info
+              CHANGESET_ID=$(grep -oP 'id="[^"]*"' "$VERSION_FILE" | head -n 1 | sed 's/id="//; s/"//' 2>/dev/null || echo "unknown")
+              AUTHOR=$(grep -oP 'author="[^"]*"' "$VERSION_FILE" | head -n 1 | sed 's/author="//; s/"//' 2>/dev/null || echo "unknown")
+              
+              echo "📋 Changeset Info:"
+              echo "   ID: $CHANGESET_ID"
+              echo "   Author: $AUTHOR"
+              echo "   Context: $FILE_CONTEXT"
+              
+          else
+              echo "❌ Version file not found: $VERSION_FILE"
+              echo "💡 Available versions:"
+              find json_changesets -name "*.xml" -type f -exec basename {} .xml \; 2>/dev/null | sort || echo "   (none)"
+              
+              echo "version_not_found=true" >> $GITHUB_ENV
+          fi
+
+      # Step 12: Execute Liquibase Runner Script
+      - name: Execute Liquibase Runner Script
+        if: env.COMMAND != 'help' && env.COMMAND != 'invalid' && env.version_not_found != 'true'
+        id: liquibase_script
+        run: |
+          echo "🚀 Running Liquibase runner script..."
+          
+          # Check if runner script exists
+          if [ ! -f "scripts/liquibase_runner.sh" ]; then
+              echo "❌ Liquibase runner script not found: scripts/liquibase_runner.sh"
+              echo "💡 Please ensure the script exists in your repository"
+              exit 1
+          fi
+          
+          chmod +x scripts/liquibase_runner.sh
+          
+          # Execute with appropriate parameters
+          if [ -n "$VERSION" ]; then
+            echo "🎯 Executing: $COMMAND $DATABASE $VERSION"
+            ./scripts/liquibase_runner.sh "${COMMAND}" "${DATABASE}" "${VERSION}" | tee runner_output_raw.txt
+          else
+            echo "⏰ Executing: $COMMAND $DATABASE (latest)"
+            ./scripts/liquibase_runner.sh "${COMMAND}" "${DATABASE}" | tee runner_output_raw.txt
+          fi
+
+      # Step 13: Clean and Format Output
+      - name: Clean and Format Output
+        if: env.COMMAND != 'help' && env.COMMAND != 'invalid' && env.version_not_found != 'true'
+        run: |
+          echo "🧹 Cleaning and formatting output..."
+          
+          # Create formatted output
+          echo "## 🚀 Liquibase Execution Results" > runner_output_final.txt
+          echo "" >> runner_output_final.txt
+          echo "**Command:** \`$COMMAND\`" >> runner_output_final.txt
+          echo "**Context:** \`$DATABASE\`" >> runner_output_final.txt
+          if [ -n "$VERSION" ]; then
+              echo "**Version:** \`$VERSION\`" >> runner_output_final.txt
+          else
+              echo "**Version:** Latest" >> runner_output_final.txt
+          fi
+          echo "**Timestamp:** $(date)" >> runner_output_final.txt
+          echo "" >> runner_output_final.txt
+          
+          # Check if execution was successful
+          if grep -q "🎉 Liquibase runner script completed successfully!" runner_output_raw.txt; then
+              echo "**Status:** ✅ SUCCESS" >> runner_output_final.txt
+          elif grep -q "❌" runner_output_raw.txt; then
+              echo "**Status:** ❌ FAILED" >> runner_output_final.txt
+          else
+              echo "**Status:** ⚠️ COMPLETED (check details)" >> runner_output_final.txt
+          fi
+          
+          echo "" >> runner_output_final.txt
+          echo "### 📋 Detailed Output" >> runner_output_final.txt
+          echo '<details>' >> runner_output_final.txt
+          echo '<summary>🔍 Click to view execution details</summary>' >> runner_output_final.txt
+          echo "" >> runner_output_final.txt
+          echo '```' >> runner_output_final.txt
+          
+          # Clean the output (remove excessive logging)
+          grep -v "^\[.*\] FINE" runner_output_raw.txt | \
+          grep -v "Loaded liquibase" | \
+          grep -v "##.*##" | \
+          sed 's/^[[:space:]]*//' >> runner_output_final.txt
+          
+          echo '```' >> runner_output_final.txt
+          echo '</details>' >> runner_output_final.txt
+          
+          echo ""
+          echo "📄 Formatted output ready:"
+          head -20 runner_output_final.txt
+
+      # Step 14: Handle Version Not Found Error
+      - name: Handle Version Not Found
+        if: env.version_not_found == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚫 Handling version not found error..."
+          
+          cat > version_error.md << EOF
+          ## ❌ Version Not Found
+          
+          **Requested Version:** \`$VERSION\`
+          **Context:** \`$DATABASE\`
+          
+          ### 🔍 Available Versions
+          EOF
+          
+          echo "Looking for available changesets..." >> version_error.md
+          echo '```' >> version_error.md
+          if [ -d "json_changesets" ]; then
+              find json_changesets -name "*.xml" -type f | while read xml_file; do
+                  filename=$(basename "$xml_file" .xml)
+                  context=$(grep -oP 'context="[^"]*"' "$xml_file" | head -n 1 | sed 's/context="//; s/"//' 2>/dev/null || echo "unknown")
+                  echo "$filename (context: $context)"
+              done >> version_error.md
+          else
+              echo "No changesets found in json_changesets/ directory" >> version_error.md
+          fi
+          echo '```' >> version_error.md
+          
+          cat >> version_error.md << 'EOF'
+          
+          ### 💡 Tips
+          1. **Check filename:** Version should match XML filename without extension
+          2. **Verify context:** Ensure the changeset has the correct context
+          3. **List available:** Use `/liquibase help` to see all options
+          
+          ---
+          *🤖 Generated by Liquibase Command Bot*
+          EOF
+          
+          gh pr comment ${{ github.event.issue.number }} --body-file version_error.md
+          
+          echo "✅ Version error comment posted"
+
+      # Step 15: Post Results to PR Comment
+      - name: Comment Results on PR
+        if: env.COMMAND != 'help' && env.COMMAND != 'invalid' && env.version_not_found != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "💬 Posting results to PR..."
+          
+          # Add execution metadata
+          echo "" >> runner_output_final.txt
+          echo "---" >> runner_output_final.txt
+          echo "*🤖 Executed by Liquibase Command Bot at $(date)*" >> runner_output_final.txt
+          echo "*⚡ Workflow: [View Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*" >> runner_output_final.txt
+          echo "*👤 Requested by: @${{ github.event.comment.user.login }}*" >> runner_output_final.txt
+          
+          # Post the comment
+          gh pr comment ${{ github.event.issue.number }} --body-file runner_output_final.txt
+          
+          echo "✅ Results comment posted successfully!"
+
+      # Step 16: Add completion reaction
+      - name: Add Completion Reaction
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🎉 Adding completion reaction to comment"
+          
+          # Determine reaction based on outcome
+          if [ "${{ env.COMMAND }}" = "help" ] || [ "${{ env.COMMAND }}" = "invalid" ]; then
+            REACTION="confused"
+          elif [ "${{ env.version_not_found }}" = "true" ]; then
+            REACTION="confused"
+          else
+            REACTION="rocket"
+          fi
+          
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -d "{\"content\":\"$REACTION\"}"
+          
+          echo "✅ Completion reaction ($REACTION) added"
+
+      # Step 17: Workflow Summary
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "=== Liquibase Command Execution Summary ==="
+          echo "🔒 Security: Minimal permissions (contents:read, pull-requests:write)"
+          echo "💬 Triggered by: @${{ github.event.comment.user.login }}"
+          echo "📝 Comment: ${{ github.event.comment.body }}"
+          
+          if [ "${{ env.COMMAND }}" = "help" ]; then
+            echo "ℹ️ Command: Help requested"
+            echo "✅ Help information posted"
+          elif [ "${{ env.COMMAND }}" = "invalid" ]; then
+            echo "❌ Command: Invalid format"
+            echo "✅ Help information posted"
+          elif [ "${{ env.version_not_found }}" = "true" ]; then
+            echo "❌ Command: ${{ env.COMMAND }}"
+            echo "❌ Version not found: ${{ env.VERSION }}"
+            echo "✅ Error information posted"
+          else
+            echo "✅ Command: ${{ env.COMMAND }}"
+            echo "✅ Context: ${{ env.DATABASE }}"
+            if [ -n "${{ env.VERSION }}" ]; then
+              echo "✅ Version: ${{ env.VERSION }}"
+            else
+              echo "✅ Version: Latest"
+            fi
+            echo "✅ Execution completed and results posted"
+          fi
+          
+          echo "=== End Summary ==="
