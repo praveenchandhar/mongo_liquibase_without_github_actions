@@ -1,0 +1,308 @@
+name: New Generate Changesets from Merged JS Files
+
+on:
+  pull_request:
+    paths:
+      - db_queries/**
+    types:
+      - closed # Trigger only when PR is closed (and potentially merged)
+
+jobs:
+  generate-changesets:
+    if: ${{ github.event.pull_request.merged == true }} # Ensure only merged PRs trigger the workflow
+    name: Generate Changesets Automatically
+    runs-on: ubuntu-latest
+    
+    # 🔒 Minimal permissions needed
+    permissions:
+      contents: write        # Create files
+      pull-requests: write   # Add comments and reactions
+      issues: write         # Comment on PRs
+
+    steps:
+      # Step 1: Add eye reaction to show we're watching
+      - name: Add Eye Reaction
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "👁️ Adding eye reaction to PR #${{ github.event.pull_request.number }}"
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions \
+            -d '{"content":"eyes"}'
+          echo "✅ Eye reaction added"
+
+      # Step 2: Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Step 3: Detect Merged .js File
+      - name: Get Merged File Name
+        id: get_filename
+        run: |
+          echo "=== Detecting merged .js files ==="
+          
+          MERGE_COMMIT_SHA=${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA=${{ github.event.pull_request.head.sha }}
+          BASE_SHA=${{ github.event.pull_request.base.sha }}
+          
+          # Look for JS files in db_queries
+          FILES=$(git diff --name-only $BASE_SHA..$HEAD_SHA | grep 'db_queries/.*\.js' || true)
+          
+          if [ -z "$FILES" ]; then
+            echo "❌ No .js files found in db_queries directory"
+            echo "js_file=" >> $GITHUB_ENV
+            echo "has_js_file=false" >> $GITHUB_ENV
+          else
+            FILE=$(echo "$FILES" | head -n 1)
+            echo "✅ File detected: $FILE"
+            echo "js_file=$FILE" >> $GITHUB_ENV
+            echo "has_js_file=true" >> $GITHUB_ENV
+            
+            if [ -f "$FILE" ]; then
+              echo "✅ File exists and is readable"
+              echo "File size: $(wc -c < "$FILE") bytes"
+            else
+              echo "❌ File does not exist at path: $FILE"
+              echo "has_js_file=false" >> $GITHUB_ENV
+            fi
+          fi
+
+      # Step 4: Set Up Python Environment
+      - name: Install Python Dependencies
+        if: env.has_js_file == 'true'
+        run: |
+          echo "Installing Python dependencies..."
+          python3 -m pip install --upgrade pip
+          pip3 install PyGithub
+          echo "✅ Python dependencies installed"
+
+      # Step 5: Create output directory
+      - name: Create output directory
+        if: env.has_js_file == 'true'
+        run: |
+          echo "Creating json_changesets directory..."
+          mkdir -p json_changesets
+          echo "✅ Directory created"
+
+      # Step 6: Generate XML (simplified Python script call)
+      - name: Generate Changeset XML
+        if: env.has_js_file == 'true'
+        id: generate_xml
+        run: |
+          echo "=== Generating Changeset XML ==="
+          
+          VERSION=$(basename ${{ env.js_file }} .js)
+          echo "Processing version: $VERSION"
+          
+          # Run Python script with --skip-pr flag
+          set +e
+          python3 scripts/v5.py \
+            --version "$VERSION" \
+            --js_file "${{ env.js_file }}" \
+            --author "${{ github.actor }}" \
+            --repo "${{ github.repository }}" \
+            --branch "changeset_$VERSION" \
+            --token "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-pr
+          
+          SCRIPT_EXIT_CODE=$?
+          set -e
+          
+          XML_FILE="json_changesets/${VERSION}.xml"
+          
+          if [ $SCRIPT_EXIT_CODE -eq 0 ] && [ -f "$XML_FILE" ]; then
+            echo "✅ XML generated successfully"
+            echo "xml_generated=true" >> $GITHUB_ENV
+            echo "xml_file=$XML_FILE" >> $GITHUB_ENV
+            echo "version=$VERSION" >> $GITHUB_ENV
+          else
+            echo "❌ XML generation failed"
+            echo "xml_generated=false" >> $GITHUB_ENV
+            
+            # If script fails, generate XML manually using basic conversion
+            echo "🔄 Attempting basic XML generation..."
+            cat > "$XML_FILE" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <databaseChangeLog
+              xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xmlns:mongodb="http://www.liquibase.org/xml/ns/dbchangelog-ext"
+              xsi:schemaLocation="
+                  http://www.liquibase.org/xml/ns/dbchangelog
+                  http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.5.xsd
+                  http://www.liquibase.org/xml/ns/dbchangelog-ext
+                  http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-ext.xsd">
+              
+              <changeSet id="$VERSION" author="${{ github.actor }}" context="liquibase_test">
+                  <!-- Generated from: ${{ env.js_file }} -->
+                  <!-- Original MongoDB operations: -->
+                  <!--
+          $(cat ${{ env.js_file }} | sed 's/-->/--&gt;/g')
+                  -->
+                  
+                  <!-- Manual conversion required - Python script failed -->
+                  <!-- Please review the original JS file and create appropriate MongoDB operations -->
+              </changeSet>
+              
+          </databaseChangeLog>
+          EOF
+            
+            if [ -f "$XML_FILE" ]; then
+              echo "✅ Basic XML template generated"
+              echo "xml_generated=true" >> $GITHUB_ENV
+              echo "xml_file=$XML_FILE" >> $GITHUB_ENV
+              echo "version=$VERSION" >> $GITHUB_ENV
+              echo "script_failed=true" >> $GITHUB_ENV
+            fi
+          fi
+
+      # Step 7: Post XML in PR Comment
+      - name: Post Changeset XML in PR Comment
+        if: env.has_js_file == 'true' && env.xml_generated == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Posting Changeset XML in PR Comment ==="
+          
+          XML_CONTENT=$(cat ${{ env.xml_file }})
+          
+          # Count operations in the XML
+          OPERATION_COUNT=$(grep -c '<changeSet id=' "${{ env.xml_file }}" 2>/dev/null || echo "1")
+          
+          # Determine status message
+          if [ "${{ env.script_failed }}" = "true" ]; then
+            STATUS_ICON="⚠️"
+            STATUS_TEXT="Generated with Basic Template"
+            STATUS_MESSAGE="**Note:** The Python script encountered an issue, so a basic XML template was generated. Please review and adjust the MongoDB operations as needed."
+          else
+            STATUS_ICON="✅"
+            STATUS_TEXT="Successfully Generated"
+            STATUS_MESSAGE="**Success:** The changeset has been automatically generated from your MongoDB queries."
+          fi
+          
+          # Create comment with XML content
+          cat > changeset_comment.md << EOF
+          ## 🤖 ${STATUS_ICON} Auto-Generated MongoDB Changeset
+
+          ${STATUS_MESSAGE}
+
+          ### 📋 Summary
+          - **Source File:** \`${{ env.js_file }}\`
+          - **Generated Version:** \`${{ env.version }}\`
+          - **Context:** \`liquibase_test\`
+          - **Changesets:** ${OPERATION_COUNT}
+          - **Status:** ${STATUS_TEXT}
+
+          ### 📄 Generated Liquibase XML
+
+          <details>
+          <summary>🔍 Click to view the generated changeset XML</summary>
+
+          \`\`\`xml
+          ${XML_CONTENT}
+          \`\`\`
+
+          </details>
+
+          ### 🎯 Next Steps
+          1. **Review** the generated XML above
+          2. **Copy** the XML content to your Liquibase changesets
+          3. **Test** the changeset in your development environment
+          4. **Apply** to your database when ready
+
+          ### 📁 File Location
+          The XML has also been saved to: \`json_changesets/${{ env.version }}.xml\`
+
+          ---
+          *🤖 Generated by Changeset Workflow • [View Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) • Triggered by merge of PR #${{ github.event.pull_request.number }}*
+          EOF
+          
+          # Post the comment
+          gh pr comment ${{ github.event.pull_request.number }} --body-file changeset_comment.md
+          
+          echo "✅ Changeset XML posted in PR comment"
+
+      # Step 8: Post No-Action Comment
+      - name: Post No-Action Comment
+        if: env.has_js_file == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Posting No-Action Comment ==="
+          
+          cat > no_action_comment.md << 'EOF'
+          ## 👁️ Changeset Generator - No Action Required
+
+          **No MongoDB changesets were generated for this PR.**
+
+          **Reason:** No `.js` files found in the `db_queries/` directory.
+
+          ### 💡 To Generate Changesets in Future PRs
+          1. Add `.js` files to the `db_queries/` directory
+          2. Include MongoDB operations like:
+
+          ```javascript
+          // context: liquibase_test
+          // Description of your changes
+
+          db.getCollection("users").insertOne({
+              name: "John Doe",
+              email: "john@example.com",
+              created_date: new Date()
+          });
+          ```
+
+          ---
+          *🤖 Generated by Changeset Workflow • [View Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})*
+          EOF
+          
+          gh pr comment ${{ github.event.pull_request.number }} --body-file no_action_comment.md
+          
+          echo "✅ No-action comment posted"
+
+      # Step 9: Add Success Reaction
+      - name: Add Success Reaction
+        if: env.has_js_file == 'true' && env.xml_generated == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🎉 Adding success reaction to PR"
+          curl -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/reactions \
+            -d '{"content":"rocket"}'
+          echo "✅ Success reaction added"
+
+      # Step 10: Workflow Summary
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "=== Workflow Summary ==="
+          echo "🔒 Security: Minimal permissions (contents:write, pull-requests:write)"
+          echo "👁️ Eye reaction: Added to PR #${{ github.event.pull_request.number }}"
+          
+          if [ "${{ env.has_js_file }}" = "true" ]; then
+            echo "✅ JS file detected: ${{ env.js_file }}"
+            if [ "${{ env.xml_generated }}" = "true" ]; then
+              echo "✅ XML generated: ${{ env.xml_file }}"
+              echo "✅ XML posted in PR comment"
+              echo "🚀 Success reaction added"
+              
+              if [ "${{ env.script_failed }}" = "true" ]; then
+                echo "⚠️ Note: Used basic template due to script issues"
+              else
+                echo "✅ Full conversion successful"
+              fi
+            else
+              echo "❌ XML generation failed"
+            fi
+          else
+            echo "ℹ️ No JS files found - posted informational comment"
+          fi
+          
+          echo "=== End Summary ==="
