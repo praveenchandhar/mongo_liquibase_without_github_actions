@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:mongodb="http://www.liquibase.org/xml/ns/dbchangelog-ext"
+    xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.5.xsd
+        http://www.liquibase.org/xml/ns/dbchangelog-ext
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-ext.xsd">
+
+
+    <changeSet id="1.1" author="praveenchandhar" context="liquibase_test">
+        <!-- CREATECOLLECTION operation on collection_1 (from line 1) -->
+        <mongodb:createCollection collectionName="collection_1" />
+    </changeSet>
+    <changeSet id="1.2" author="praveenchandhar" context="liquibase_test">
+        <!-- CREATECOLLECTION operation on collection_2 (from line 2) -->
+        <mongodb:createCollection collectionName="collection_2" />
+    </changeSet>
+</databaseChangeLog>
